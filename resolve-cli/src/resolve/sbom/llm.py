@@ -79,6 +79,44 @@ class Opencode(LLM):
         return process.stdout.splitlines()[-1]
 
 
+class Claude(LLM):
+    """Shells out to the Claude Code CLI. Auth comes from ANTHROPIC_API_KEY or a prior `claude` login."""
+
+    def __init__(self, model: str | None = None):
+        import shutil
+
+        if shutil.which("claude") is None:
+            raise APIConnectionError() from FileNotFoundError("`claude` CLI not found on PATH")
+        self.model = model
+
+    def _query(self, payload: str) -> str:
+        import subprocess
+
+        # Web tools are pre-approved (as for Opencode) so the CLI never stops to
+        # ask for permission; everything else stays denied.
+        agent_command = ["claude", "-p", "--allowedTools", "WebFetch", "WebSearch"]
+        if self.model is not None:
+            agent_command += ["--model", self.model]
+
+        # The prompt goes over stdin: --allowedTools is variadic and would
+        # swallow a trailing positional prompt.
+        process = subprocess.run(
+            agent_command,
+            input=payload,
+            text=True,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        if process.returncode != 0:
+            print(process.stderr)
+            raise LLMError(process.stderr or process.stdout)
+
+        lines = process.stdout.strip().splitlines()
+        if not lines:
+            raise LLMError("Empty response")
+        return lines[-1].strip().strip("`")
+
+
 class Gemini(LLM):
     def __init__(self, model: str = 'gemini-2.5-flash', **kwargs) -> None:
         from google import genai

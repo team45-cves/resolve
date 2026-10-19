@@ -20,7 +20,7 @@ Finally, an LLM is used to extract the vulnerable file and function from the nat
 
 ### Options
   - `-o`, `--out` -- path for the output `vulnerabilities.json` (defaults to `<sbom>.vuln.json`)
-  - `-L`, `--llm-provider` `[{gemini,ollama,opencode}]` -- LLM backend used to extract the affected file and function from each CVE description. Omit it to skip extraction (those fields are reported as `UNKNOWN`); passing `-L` with no value uses `opencode`.
+  - `-L`, `--llm-provider` `[{claude,gemini,ollama,opencode}]` -- LLM backend used to extract the affected file and function from each CVE description. Omit it to skip extraction (those fields are reported as `UNKNOWN`); passing `-L` with no value uses `opencode`.
   - `--id` `[ID ...]` -- only report the given vulnerability id(s)
   - `--min-score` -- minimum CVSS v3 base score for a CVE to be included. When set, CVEs that have no v3 score are also excluded (by default they are included).
 
@@ -41,7 +41,13 @@ See the [SBOM example](../../examples/sbom.md) for an end-to-end walkthrough.
 
 ## LLM Providers
 
-Affected-file/function extraction is optional; if you do not pass `-L`, those fields are left as `UNKNOWN` and no LLM is contacted. When enabled, the supported providers are Gemini, Ollama, and Opencode.
+Affected-file/function extraction is optional; if you do not pass `-L`, those fields are left as `UNKNOWN` and no LLM is contacted. When enabled, the supported providers are Claude, Gemini, Ollama, and Opencode.
+
+### Claude
+
+To use Claude, the `claude` CLI ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) must be installed and authenticated, either through a prior `claude` login or by setting the `ANTHROPIC_API_KEY` environmental variable.
+
+This method uses the Claude Code CLI's default model.
 
 ### Gemini
 

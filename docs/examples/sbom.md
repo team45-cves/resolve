@@ -44,7 +44,7 @@ resolve sbom example.spdx.json -o vulnerabilities.json -L ollama
 ```
 
 !!! note
-    The lookup queries [NIST's NVD](https://nvd.nist.gov/) and [MITRE's CWE database](https://cwe.mitre.org/) over the network, so a run needs internet access, plus the chosen LLM provider (`gemini`, `ollama`, or `opencode`) installed and authenticated. Without `-L`, the CVEs are still reported, but `affected_file` and `affected_function` come back as `UNKNOWN`.
+    The lookup queries [NIST's NVD](https://nvd.nist.gov/) and [MITRE's CWE database](https://cwe.mitre.org/) over the network, so a run needs internet access, plus the chosen LLM provider (`gemini`, `ollama`, or `opencode`) installed and authenticated. Without `-L`, the CVEs are still reported, but `affected-file` and `affected-function` come back as `UNKNOWN`.
 
 Under the hood the tool runs four steps (see the [component docs](../components/resolve-cli/sbom.md) for detail):
 
@@ -61,14 +61,14 @@ The tool writes a [`vulnerabilities.json`](../concepts/vulnerabilities-json.md) 
 {
   "vulnerabilities": [
     {
-      "cve_id": "CVE-2026-34085",
-      "cve_description": "fontconfig before 2.17.1 has an off-by-one error in allocation during sfnt capability handling, leading to a one-byte out-of-bounds write, and potentially a crash or code execution. This is in FcFontCapabilities in fcfreetype.c.",
-      "package_name": "fontconfig:fontconfig_project::fontconfig",
-      "package_version": "2.2.1",
-      "cwe_id": "193",
-      "cwe_name": "Off-by-one Error",
-      "affected_file": "fcfreetype.c",
-      "affected_function": "FcFontCapabilities"
+      "cve-id": "CVE-2026-34085",
+      "cve-description": "fontconfig before 2.17.1 has an off-by-one error in allocation during sfnt capability handling, leading to a one-byte out-of-bounds write, and potentially a crash or code execution. This is in FcFontCapabilities in fcfreetype.c.",
+      "package-name": "fontconfig:fontconfig_project::fontconfig",
+      "package-version": "2.2.1",
+      "cwe-id": "193",
+      "cwe-name": "Off-by-one Error",
+      "affected-file": "fcfreetype.c",
+      "affected-function": "FcFontCapabilities"
     }
   ]
 }

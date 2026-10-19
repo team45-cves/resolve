@@ -37,7 +37,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "-L",
         "--llm-provider",
         nargs="?",
-        choices=["gemini", "ollama", "opencode"],
+        choices=["claude", "gemini", "ollama", "opencode"],
         const="opencode",
         default=None,
     )
@@ -81,7 +81,7 @@ def output_json(vulns: list[Vulnerability], output_path: Path):
     doc = VulnerabilityDocument(vulnerabilities=vulns)
 
     with open(output_path, 'w') as f:
-        f.write(doc.model_dump_json(indent=2))
+        f.write(doc.model_dump_json(indent=2, by_alias=True))
     
     
 def cve2vuln(
@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     asyncio.run(dep_lookup(deps, **kwargs))
 
     provider = {
+        "claude": llm.Claude,
         "gemini": llm.Gemini,
         "ollama": llm.Ollama,
         "opencode": llm.Opencode,
