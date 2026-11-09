@@ -4,14 +4,18 @@
 # pipeline: resolvecc, resolve reach / remediate / get-facts / sbom / crash-
 # analysis / input-synthesis, and the CMake+Ninja toolchain for the SBOM path.
 #
-# Pick the AI backend at build time with one arg (default: codex / OpenAI):
-#   docker build -t resolve .                                 # codex (default)
-#   docker build --build-arg AI_BACKEND=claude   -t resolve . # Claude Code
-#   docker build --build-arg AI_BACKEND=opencode -t resolve . # opencode
-#   docker build --build-arg AI_BACKEND=none     -t resolve . # no AI (hermetic)
+# Build from the CI-CD/ folder, which is the build context (COPY needs
+# scripts/ from there). Pick the AI backend with one arg (default: codex):
+#   docker build -f docker/Dockerfile -t resolve .                                 # codex (default)
+#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=claude   -t resolve . # Claude Code
+#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=opencode -t resolve . # opencode
+#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=none     -t resolve . # no AI (hermetic)
 #
-# Run (mount your target source, e.g. a cJSON checkout, into /work):
-#   docker run -it --rm -v "${PWD}:/work" -w /work resolve bash
+# The ENTRYPOINT is start_action.sh, which takes an action name (ART-001):
+#   docker run --rm -v "${PWD}:/work" resolve sbom ...
+#   docker run --rm -v "${PWD}:/work" -e RESOLVE_ACTION=sbom resolve
+# For an interactive shell, pass bash (start_action.sh passes shells through):
+#   docker run -it --rm -v "${PWD}:/work" resolve bash
 #   (PowerShell: -v "${PWD}:/work" ; cmd.exe: -v "%cd%:/work")
 #
 # AUTH IS PROVIDED AT RUN TIME, never baked into the image:
@@ -31,8 +35,10 @@ ENV PATH="/opt/resolve/bin:${PATH}"
 #   bash coreutils clang llvm binutils zstd : the 5 RESOLVE runtime deps
 #   ca-certificates curl git                : fetch release + let agents clone
 #   cmake ninja-build pkg-config            : SBOM build path (CMake >= 4.3)
+#   python3                                 : CI-CD action scripts
+#   (setpriv and useradd, used below and by start_action.sh, ship with ubuntu)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash coreutils clang llvm binutils zstd \
+        bash coreutils clang llvm binutils zstd python3 \
         ca-certificates curl git pkg-config cmake ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
@@ -68,5 +74,19 @@ RUN case "$AI_BACKEND" in \
       *) echo "ERROR: unknown AI_BACKEND='$AI_BACKEND' (use codex|claude|opencode|none)" >&2; exit 1 ;; \
     esac
 
+# --- CI-CD action layer (ART-001) ------------------------------------------
+# Unprivileged user for the AI stages. GitHub starts Docker actions as root,
+# and `claude --dangerously-skip-permissions` refuses to run as root (F-9), so
+# start_action.sh drops to this user (or the shared mount's owner) with setpriv.
+RUN useradd -m resolve
+
+# Action scripts, logger.py, ci_env.py and the dispatcher. These change most
+# often, so they go last to keep the layers above cached.
+ENV RESOLVE_SCRIPTS_DIR=/app/actions
+ENV PYTHONUNBUFFERED=1
+COPY scripts/ /app/actions/
+RUN chmod 755 /app/actions/start_action.sh
+
+# The shared mount. GitHub overrides this with -w /github/workspace.
 WORKDIR /work
-CMD ["bash"]
+ENTRYPOINT ["/app/actions/start_action.sh"]
