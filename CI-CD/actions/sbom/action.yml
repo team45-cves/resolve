@@ -1,19 +1,26 @@
 name: SBOM Scan
 description: >
   Run `resolve sbom` on an SPDX SBOM inside the RESOLVE runtime image
-  (setup/Dockerfile) and write vulnerabilities.json plus one file per CVE
-  for the input-synthesis stage.
+  (CI-CD/docker/Dockerfile) and write vulnerabilities.json plus one file per
+  CVE for the input-synthesis stage.
 
+# This is a composite action so the image can be passed in as an input: the
+# test pipeline builds the image earlier in the same run, so its name isn't
+# fixed. (A `using: docker` action must name its image in this file.)
+#
 # Usage (from another repository; use ./CI-CD/actions/sbom inside this one):
+#   - run: docker build -f CI-CD/docker/Dockerfile --build-arg AI_BACKEND=none -t resolve-ci:dev CI-CD
 #   - uses: Team45-CVEs/resolve/CI-CD/actions/sbom@main
 #     id: sbom
 #     with:
-#       sbom-path: examples/sbom/example.spdx.json
-#       llm-provider: claude
-#       api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#       image: resolve-ci:dev
+#       sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
 #   - run: echo "${{ steps.sbom.outputs.cve-files }}"
 
 inputs:
+  image:
+    description: "RESOLVE runtime image to run (built or pulled by an earlier step)"
+    required: true
   sbom-path:
     description: "SPDX SBOM path, relative to the workspace"
     required: true
@@ -41,9 +48,6 @@ inputs:
   filter-deferred:
     description: "Exclude CVEs deferred by NIST"
     default: "false"
-  image:
-    description: "Prebuilt RESOLVE image to use; if empty, builds setup/Dockerfile (with the Claude CLI when llm-provider is claude)"
-    default: ""
 
 outputs:
   vulnerabilities-path:
@@ -59,32 +63,12 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Build RESOLVE runtime image
-      id: image
-      shell: bash
-      env:
-        IMAGE: ${{ inputs.image }}
-        LLM_PROVIDER: ${{ inputs.llm-provider }}
-      run: |
-        set -euo pipefail
-        if [ -z "$IMAGE" ]; then
-          repo_root=$(realpath "$GITHUB_ACTION_PATH/../../..")
-          # Only the claude provider needs a CLI in the image; gemini uses the
-          # google-genai package bundled with RESOLVE.
-          backend=none
-          [ "$LLM_PROVIDER" = "claude" ] && backend=claude
-          IMAGE="resolve-sbom:$backend"
-          docker build --build-arg AI_BACKEND="$backend" -t "$IMAGE" \
-            -f "$repo_root/setup/Dockerfile" "$repo_root/setup"
-        fi
-        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-
     - name: Run SBOM scan
       id: scan
       shell: bash
       env:
-        IMAGE: ${{ steps.image.outputs.image }}
-        # INPUT_<NAME> is the convention env.get_input reads on GitHub.
+        IMAGE: ${{ inputs.image }}
+        # INPUT_<NAME> is the convention ci_env.get_input reads on GitHub.
         INPUT_SBOM_PATH: ${{ inputs.sbom-path }}
         INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
         INPUT_LLM_PROVIDER: ${{ inputs.llm-provider }}
@@ -96,23 +80,22 @@ runs:
         INPUT_API_KEY: ${{ inputs.api-key }}
       run: |
         set -euo pipefail
-        repo_root=$(realpath "$GITHUB_ACTION_PATH/../../..")
         # Created on the host so later steps can write next to the results.
         mkdir -p "$INPUT_OUTPUT_DIR"
 
+        # The image's ENTRYPOINT (start_action.sh) dispatches "sbom" to
+        # /app/actions/sbom.py. --user runs it as the runner's user, so the
+        # output files aren't root-owned (sbom doesn't need root).
         # GITHUB_OUTPUT / GITHUB_STEP_SUMMARY are mounted so the script can set
-        # step outputs from inside the container; GITHUB_ACTIONS lets env.py
-        # detect the platform. PYTHONPATH runs resolve-cli from this repo
-        # instead of the release pinned in the image.
+        # step outputs from inside the container; GITHUB_ACTIONS lets ci_env.py
+        # detect the platform.
         docker run --rm \
+          --user "$(id -u):$(id -g)" \
           -v "$GITHUB_WORKSPACE:/work" -w /work \
-          -v "$repo_root:/resolve:ro" \
           -v "$GITHUB_OUTPUT:/gh/output" -e GITHUB_OUTPUT=/gh/output \
           -v "$GITHUB_STEP_SUMMARY:/gh/summary" -e GITHUB_STEP_SUMMARY=/gh/summary \
           -e GITHUB_ACTIONS \
-          -e PYTHONPATH=/resolve/resolve-cli/src \
           -e INPUT_SBOM_PATH -e INPUT_OUTPUT_DIR -e INPUT_LLM_PROVIDER -e INPUT_MIN_SCORE -e INPUT_CVE_IDS \
           -e INPUT_FILTER_REJECTED -e INPUT_FILTER_DISPUTED -e INPUT_FILTER_DEFERRED \
           -e INPUT_API_KEY \
-          "$IMAGE" \
-          /opt/resolve/bin/python3 /resolve/CI-CD/scripts/sbom.py
+          "$IMAGE" sbom
