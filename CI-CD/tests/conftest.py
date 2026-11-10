@@ -190,4 +190,5 @@ def fixed_uuid(monkeypatch):
     "EOF_" followed by 32 zeros.
     """
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=0))
+
     
