@@ -33,13 +33,15 @@ CI_CD_DIR = Path(__file__).resolve().parent.parent
 ACTIONS_DIR = CI_CD_DIR / "actions"
 SCRIPTS_DIR = CI_CD_DIR / "scripts"
 
-# Inputs an action uses itself and never hands to its script, per action
-# folder. Keep this short: anything listed here is skipped by test 1.
 
-# UPDATE THIS FOR ANY ACTION.YML INPUT THAT DOESN'T HAVE A MATCHING .PY GLOBAL VARIABLE:
+COMMON_ACTION_ONLY_INPUTS = {"image"}
+
+
+# Extra per-action exceptions, by action folder. Usually empty.
 ACTION_ONLY_INPUTS = {
-    "sbom": {"image"},  # picks the Docker image the script runs in
+    # "example-action": {"cache-dir"},
 }
+
 
 # Variables the environment already sets. Locally and on GitLab, get_input()
 # reads <NAME> with no INPUT_ prefix, so a global named PATH would pick up
@@ -101,12 +103,16 @@ def _action_file(name):
     folder = ACTIONS_DIR / name
     return folder / "action.yml" if (folder / "action.yml").is_file() else folder / "action.yaml"
 
-
+#turns an input name into its global name.
 def _to_global(input_name):
     """sbom-path -> SBOM_PATH."""
     return input_name.upper().replace("-", "_")
 
+#returns the inputs the input checks should skip for this action
+def _skipped_inputs(name):
+    return COMMON_ACTION_ONLY_INPUTS | ACTION_ONLY_INPUTS.get(name, set())
 
+#returns whether a name is off limits
 def _is_reserved(name):
     return name in RESERVED_NAMES or name.startswith(RESERVED_PREFIXES)
 
@@ -126,7 +132,7 @@ def _get_input_key(node):
             return child.args[0].value
     return None
 
-
+#pytest runs once per action folder
 @pytest.fixture(params=ACTIONS)
 def action(request):
     """One action: its folder name, parsed action.yml, and script source."""
@@ -137,6 +143,7 @@ def action(request):
             f"actions/{name}/ has no matching script: expected scripts/{name}.py"
         )
 
+    #Finds the action's action.yml and reads it into a Python dict.
     action_path = _action_file(name)
     spec = yaml.safe_load(action_path.read_text(encoding="utf-8")) or {}
     source = script_path.read_text(encoding="utf-8")
@@ -190,7 +197,7 @@ def test_every_input_has_a_global(action):
     Catches an input that was added to action.yml but never wired up in the
     script, or one that was renamed on only one side.
     """
-    skipped = ACTION_ONLY_INPUTS.get(action["name"], set())
+    skipped = _skipped_inputs(action["name"])
     problems = []
     for input_name in action["inputs"]:
         if input_name in skipped:
@@ -267,7 +274,7 @@ def test_inputs_reach_the_script(action):
     env = step.get("env") or {}
     run = step.get("run") or ""
 
-    skipped = ACTION_ONLY_INPUTS.get(action["name"], set())
+    skipped = _skipped_inputs(action["name"])
     problems = []
     for input_name in action["inputs"]:
         if input_name in skipped:
