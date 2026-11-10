@@ -1,7 +1,7 @@
 name: SBOM Scan
 description: >
   Run `resolve sbom` on an SPDX SBOM inside the RESOLVE runtime image
-  (CI-CD/docker/Dockerfile) and write vulnerabilities.json plus one file per
+  (CI-CD/docker/pipeline/Dockerfile) and write vulnerabilities.json plus one file per
   CVE for the input-synthesis stage.
 
 # This is a composite action so the image can be passed in as an input: the
@@ -9,7 +9,7 @@ description: >
 # fixed. (A `using: docker` action must name its image in this file.)
 #
 # Usage (from another repository; use ./CI-CD/actions/sbom inside this one):
-#   - run: docker build -f CI-CD/docker/Dockerfile --build-arg AI_BACKEND=none -t resolve-ci:dev CI-CD
+#   - run: docker build -f CI-CD/docker/pipeline/Dockerfile --build-arg AI_BACKEND=none -t resolve-ci:dev CI-CD
 #   - uses: Team45-CVEs/resolve/CI-CD/actions/sbom@main
 #     id: sbom
 #     with:

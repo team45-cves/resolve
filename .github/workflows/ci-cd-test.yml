@@ -1,6 +1,6 @@
 # Team 45 CI-CD test pipeline.
 #
-# Builds the RESOLVE runtime image (CI-CD/docker/Dockerfile), runs the sbom
+# Builds the RESOLVE runtime image (CI-CD/docker/pipeline/Dockerfile), runs the sbom
 # action on a known sample SBOM, checks the results, and uploads them.
 # This tests the plumbing (action.yml -> start_action.sh -> sbom.py ->
 # outputs), not the accuracy of `resolve sbom`.
@@ -36,7 +36,7 @@ jobs:
       - name: Build RESOLVE runtime image
         run: >
           docker build
-          -f CI-CD/docker/Dockerfile
+          -f CI-CD/docker/pipeline/Dockerfile
           --build-arg AI_BACKEND=none
           -t "$IMAGE"
           CI-CD
