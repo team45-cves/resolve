@@ -109,19 +109,45 @@ def run_sbom_lookup(sbom_path: Path, vulnerabilities_path: Path) -> None:
         subprocess.run(command, check=True, env=run_env)
 
 
+def hyphenate_keys(vulnerabilities: list[dict]) -> bool:
+    """Rename underscore keys (cve_id) to the hyphenated form (cve-id), in place.
+
+    TEMPORARY WORKAROUND: upstream `resolve sbom` (v0.1.0 and riversideresearch
+    main) writes underscore keys, but reach, remediate and CVEAssert read
+    hyphenated ones (see docs/concepts/vulnerabilities-json.md). Remove this
+    once a RESOLVE release writes hyphenated keys itself.
+
+    Returns True if any key was renamed.
+    """
+    changed = False
+    for index, vuln in enumerate(vulnerabilities):
+        renamed = {key.replace("_", "-"): value for key, value in vuln.items()}
+        if renamed != vuln:
+            vulnerabilities[index] = renamed
+            changed = True
+    return changed
+
+
 def load_vulnerabilities(vulnerabilities_path: Path) -> list[dict]:
     if not vulnerabilities_path.is_file():
         raise RuntimeError(f"resolve sbom did not produce {vulnerabilities_path}")
 
-    vulnerabilities = json.loads(vulnerabilities_path.read_text(encoding="utf-8"))["vulnerabilities"]
+    document = json.loads(vulnerabilities_path.read_text(encoding="utf-8"))
+    vulnerabilities = document["vulnerabilities"]
+
+    if hyphenate_keys(vulnerabilities):
+        logger.warning(
+            "resolve sbom wrote underscore keys (cve_id); converted them to hyphenated "
+            "keys (cve-id) so reach, remediate and CVEAssert can read them.",
+            title="SBOM scan",
+        )
+        # Rewrite the file so every later stage gets the hyphenated keys too.
+        vulnerabilities_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
     for index, vuln in enumerate(vulnerabilities):
         missing = REQUIRED_KEYS - set(vuln)
         if missing:
-            raise RuntimeError(
-                f"vulnerabilities[{index}] is missing {sorted(missing)}. If the keys use "
-                "underscores (cve_id), the installed resolve predates the hyphenated-key fix "
-                "in resolve-cli/src/resolve/sbom/schema/vuln_spec.py."
-            )
+            raise RuntimeError(f"vulnerabilities[{index}] is missing {sorted(missing)}.")
     return vulnerabilities
 
 
