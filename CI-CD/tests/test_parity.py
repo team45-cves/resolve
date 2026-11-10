@@ -35,6 +35,8 @@ SCRIPTS_DIR = CI_CD_DIR / "scripts"
 
 # Inputs an action uses itself and never hands to its script, per action
 # folder. Keep this short: anything listed here is skipped by test 1.
+
+# UPDATE THIS FOR ANY ACTION.YML INPUT THAT DOESN'T HAVE A MATCHING .PY GLOBAL VARIABLE:
 ACTION_ONLY_INPUTS = {
     "sbom": {"image"},  # picks the Docker image the script runs in
 }
@@ -69,11 +71,14 @@ RESERVED_PREFIXES = (
 
 # set_output("name", ...) or env.set_output('name', ...): group 2 is the name.
 SET_OUTPUT_RE = re.compile(r"""\bset_output\(\s*(["'])([^"']+)\1""")
-# Any set_output( call, to catch ones whose name isn't a plain string literal.
+
+# Any set_output( call, to catch ones whose name isn't a plain string literal. Used to count the number of calls.
 ANY_SET_OUTPUT_RE = re.compile(r"\bset_output\(")
-# ${{ steps.<id>.outputs.<name> }} in an action output's value.
+
+# ${{ steps.<id>.outputs.<name> }} in an action output's value. Grabs the step and the name.
 STEP_OUTPUT_RE = re.compile(r"\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}")
-# ${{ inputs.<name> }} in a step's env value.
+
+# ${{ inputs.<name> }} in a step's env value. Grabs the input name.
 INPUT_REF_RE = re.compile(r"^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$")
 
 
@@ -81,7 +86,7 @@ INPUT_REF_RE = re.compile(r"^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$")
 
 
 def _find_actions():
-    """Every action folder with an action.yml, sorted by name."""
+    """Every action folder with an action.yml, sorted alphabetically by name."""
     return sorted(
         path.parent.name
         for pattern in ("*/action.yml", "*/action.yaml")
@@ -91,7 +96,7 @@ def _find_actions():
 
 ACTIONS = _find_actions()
 
-
+#Given a folder name, it returns the path to that folder's action.yml/.yaml
 def _action_file(name):
     folder = ACTIONS_DIR / name
     return folder / "action.yml" if (folder / "action.yml").is_file() else folder / "action.yaml"
