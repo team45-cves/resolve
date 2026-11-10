@@ -1,0 +1,78 @@
+# Team 45 CI-CD test pipeline.
+#
+# Builds the RESOLVE runtime image (CI-CD/docker/Dockerfile), runs the sbom
+# action on a known sample SBOM, checks the results, and uploads them.
+# This tests the plumbing (action.yml -> start_action.sh -> sbom.py ->
+# outputs), not the accuracy of `resolve sbom`.
+#
+# Note: `resolve sbom` queries NVD live, so a failure here can be caused by
+# NVD being slow or rate-limiting, not by our code.
+
+name: CI-CD test
+
+# Manual only for now: run it from the Actions tab ("Run workflow") or with
+# `gh workflow run ci-cd-test.yml`. To run automatically later, add:
+#   push:
+#     paths: ["CI-CD/**", ".github/workflows/ci-cd-test.yml"]
+#   pull_request:
+#     paths: ["CI-CD/**", ".github/workflows/ci-cd-test.yml"]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: sbom action (sample SBOM)
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: resolve-ci:dev
+      OUTPUT_DIR: test-results/sbom-c-vuln
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Build RESOLVE runtime image
+        run: >
+          docker build
+          -f CI-CD/docker/Dockerfile
+          --build-arg AI_BACKEND=none
+          -t "$IMAGE"
+          CI-CD
+
+      - name: Run sbom action
+        id: sbom
+        uses: ./CI-CD/actions/sbom
+        with:
+          image: ${{ env.IMAGE }}
+          sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+          output-dir: ${{ env.OUTPUT_DIR }}
+
+      - name: Check results
+        env:
+          CVE_COUNT: ${{ steps.sbom.outputs.cve-count }}
+          VULNS_PATH: ${{ steps.sbom.outputs.vulnerabilities-path }}
+        run: |
+          set -euo pipefail
+          echo "vulnerabilities-path: $VULNS_PATH"
+          echo "cve-count:            $CVE_COUNT"
+
+          test -f "$OUTPUT_DIR/vulnerabilities.json" \
+            || { echo "::error::$OUTPUT_DIR/vulnerabilities.json was not created"; exit 1; }
+          python3 -m json.tool "$OUTPUT_DIR/vulnerabilities.json" > /dev/null \
+            || { echo "::error::vulnerabilities.json is not valid JSON"; exit 1; }
+          [ "${CVE_COUNT:-0}" -gt 0 ] \
+            || { echo "::error::sbom action reported no CVEs"; exit 1; }
+
+          # Expected for this sample, but NVD data is live, so only warn.
+          grep -q "CVE-2024-31755" "$OUTPUT_DIR/vulnerabilities.json" \
+            || echo "::warning::CVE-2024-31755 not in results (NVD data may have changed)"
+
+      - name: Upload results
+        if: always()   # upload even if an earlier step failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-c-vuln-results
+          path: ${{ env.OUTPUT_DIR }}
+          if-no-files-found: warn
