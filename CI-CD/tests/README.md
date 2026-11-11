@@ -218,7 +218,7 @@ CI-CD/
         ├── logger/                 # (planned)
         │   ├── test_logger.py
         │   └── expected/
-        │       └── annotations.txt
+        │       └── Annotations.txt
         └── actionN/                # (planned) one per target script
             ├── conftest.py         # fixtures used only by this action
             ├── test_actionN.py

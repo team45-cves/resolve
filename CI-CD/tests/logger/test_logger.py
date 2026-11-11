@@ -10,7 +10,7 @@ These tests check each part of that format:
     3. notice/warning/error()   annotations and their properties
     4. Escaping                 characters that would break a command
     5. group()                  collapsible blocks of lines
-    6. Golden file              a realistic run compared with expected/annotations.txt
+    6. Golden file              a realistic run compared with expected/Annotations.txt
     7. Platforms                the same output on GitHub, GitLab and locally
 
 capsys (a pytest built-in fixture) captures everything printed during a test;
@@ -26,7 +26,7 @@ import logger
 
 # Golden file the full-run test compares against.
 EXPECTED = Path(__file__).parent / "expected"
-EXPECTED_ANNOTATIONS = EXPECTED / "annotations.txt"
+EXPECTED_ANNOTATIONS = EXPECTED / "Annotations.txt"
 
 # The three annotation functions and the command each one prints.
 ANNOTATIONS = [
@@ -225,7 +225,7 @@ def test_group_name_escaped(capsys):
 
 
 def test_output_matches_golden_file(capsys):
-    """A realistic run, using every function, matches expected/annotations.txt line for line."""
+    """A realistic run, using every function, matches expected/Annotations.txt line for line."""
     logger.info("Starting build report")
     logger.debug("Build path: dist")
     with logger.group("Findings"):
