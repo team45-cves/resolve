@@ -1,0 +1,156 @@
+# Team 45 CI-CD negative test pipeline.
+#
+# Same plumbing as ci-cd-test.yml, but every case feeds the sbom action
+# intentionally bad input and asserts that the action FAILS (or, for the
+# "no-results" case, fails or reports zero CVEs). A case passes when the
+# action fails the way we want; it fails if the action wrongly succeeds.
+#
+# Each case runs the action with `continue-on-error: true` so the job can
+# inspect `steps.sbom.outcome` afterwards. (`outcome` is the real result;
+# `conclusion` would be masked to "success" by continue-on-error.)
+#
+# Assumes the action exposes these inputs: image, sbom-path, output-dir,
+# llm-provider, api-key, min-score, cve-ids. If one has a different name in
+# CI-CD/actions/sbom/action.yml, adjust the `with:` block below.
+
+name: CI-CD test (bad inputs)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom-bad-inputs:
+    name: "bad input: ${{ matrix.case }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # run every case even if one misbehaves
+      matrix:
+        include:
+          # sbom.py: "SBOM not found" -> exit 1
+          - case: missing-sbom-file
+            sbom-path: CI-CD/tests/does-not-exist.spdx.json
+            expect: failure
+
+          # File exists but is not JSON; resolve sbom should choke on it.
+          - case: sbom-not-json
+            sbom-path: test-results/bad-inputs/not-json.spdx.json
+            expect: failure
+
+          # File is JSON but not an SPDX document.
+          - case: sbom-wrong-schema
+            sbom-path: test-results/bad-inputs/wrong-schema.spdx.json
+            expect: failure
+
+          # sbom.py provider_env(): provider needs a key and none is given.
+          - case: claude-without-api-key
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            llm-provider: claude
+            api-key: ""
+            expect: failure
+
+          - case: gemini-without-api-key
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            llm-provider: gemini
+            api-key: ""
+            expect: failure
+
+          # Unknown provider is passed to `resolve sbom -L`, which should reject it.
+          - case: unknown-llm-provider
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            llm-provider: not-a-real-provider
+            expect: failure
+
+          # Non-numeric CVSS threshold; resolve should reject it.
+          - case: non-numeric-min-score
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            min-score: not-a-number
+            expect: failure
+
+          # Malformed CVE ID. Either resolve errors, or it matches nothing and
+          # the action reports 0 CVEs. Both are acceptable; reporting >0 is not.
+          - case: nonexistent-cve-id
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            cve-ids: CVE-0000-00000
+            expect: failure-or-empty
+
+          # The runtime image doesn't exist, so the action can't start.
+          - case: missing-image
+            sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
+            image: resolve-ci:this-tag-does-not-exist
+            expect: failure
+
+    env:
+      IMAGE: resolve-ci:dev
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Build RESOLVE runtime image
+        run: >
+          docker build
+          -f CI-CD/docker/pipeline/Dockerfile
+          --build-arg AI_BACKEND=none
+          -t "$IMAGE"
+          CI-CD
+
+      - name: Create malformed SBOM fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/bad-inputs
+          echo 'this is { not json' > test-results/bad-inputs/not-json.spdx.json
+          echo '{"hello": "world"}'  > test-results/bad-inputs/wrong-schema.spdx.json
+
+      - name: Run sbom action with bad input
+        id: sbom
+        continue-on-error: true   # we WANT this to fail; assert on it below
+        uses: ./CI-CD/actions/sbom
+        with:
+          image: ${{ matrix.image || env.IMAGE }}
+          sbom-path: ${{ matrix.sbom-path }}
+          output-dir: test-results/bad-inputs/out-${{ matrix.case }}
+          llm-provider: ${{ matrix.llm-provider || 'none' }}
+          api-key: ${{ matrix.api-key || '' }}
+          min-score: ${{ matrix.min-score || '' }}
+          cve-ids: ${{ matrix.cve-ids || '' }}
+
+      - name: Assert the action failed as expected
+        env:
+          CASE: ${{ matrix.case }}
+          EXPECT: ${{ matrix.expect }}
+          OUTCOME: ${{ steps.sbom.outcome }}
+          CVE_COUNT: ${{ steps.sbom.outputs.cve-count }}
+        run: |
+          set -euo pipefail
+          echo "case:     $CASE"
+          echo "expect:   $EXPECT"
+          echo "outcome:  $OUTCOME"
+          echo "cve-count: ${CVE_COUNT:-<unset>}"
+
+          case "$EXPECT" in
+            failure)
+              [ "$OUTCOME" = "failure" ] \
+                || { echo "::error::[$CASE] expected the sbom action to fail but it finished with outcome '$OUTCOME'"; exit 1; }
+              ;;
+            failure-or-empty)
+              if [ "$OUTCOME" = "success" ] && [ "${CVE_COUNT:-0}" -gt 0 ]; then
+                echo "::error::[$CASE] action succeeded and reported $CVE_COUNT CVEs for a bogus CVE ID"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unknown expectation '$EXPECT' for case $CASE"; exit 1 ;;
+          esac
+
+          echo "OK: [$CASE] behaved as expected."
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-bad-input-${{ matrix.case }}
+          path: test-results/bad-inputs/out-${{ matrix.case }}
+          if-no-files-found: ignore   # most failing cases produce no output
+          
