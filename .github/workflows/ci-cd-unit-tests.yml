@@ -1,0 +1,71 @@
+# Team 45 CI-CD unit tests (ART-011 layer 3: pytest inside the image).
+#
+# Builds the runtime image (CI-CD/docker/pipeline/Dockerfile), builds the test
+# image on top of it (CI-CD/docker/pipeline_test/Dockerfile), and runs every
+# test under CI-CD/tests/ inside it, so the tests see the same OS, Python and
+# tools the actions do. No network or AI needed at test time.
+#
+# The test image's ENTRYPOINT is pytest; anything after the image name in
+# `docker run` is passed to pytest. The JUnit report is written to /results,
+# which is mounted from test-results/unit on the runner and uploaded.
+
+name: CI-CD unit tests
+
+# Manual only for now: run it from the Actions tab ("Run workflow") or with
+# `gh workflow run ci-cd-unit-tests.yml`. To run automatically later, add:
+#   push:
+#     paths: ["CI-CD/**", ".github/workflows/ci-cd-unit-tests.yml"]
+#   pull_request:
+#     paths: ["CI-CD/**", ".github/workflows/ci-cd-unit-tests.yml"]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: pytest (in test image)
+    runs-on: ubuntu-latest
+    env:
+      RUNTIME_IMAGE: resolve-ci:dev
+      TEST_IMAGE: resolve-test:dev
+      RESULTS_DIR: test-results/unit
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Build RESOLVE runtime image
+        run: >
+          docker build
+          -f CI-CD/docker/pipeline/Dockerfile
+          --build-arg AI_BACKEND=none
+          -t "$RUNTIME_IMAGE"
+          CI-CD
+
+      - name: Build test image
+        run: >
+          docker build
+          -f CI-CD/docker/pipeline_test/Dockerfile
+          --build-arg BASE_IMAGE="$RUNTIME_IMAGE"
+          -t "$TEST_IMAGE"
+          CI-CD
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULTS_DIR"
+          # --user: run as the runner's user so junit.xml isn't root-owned.
+          # -rA: list every test's result at the end of the log.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD/$RESULTS_DIR:/results" \
+            "$TEST_IMAGE" -rA
+
+      - name: Upload test report
+        if: always()   # upload even if tests failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: ${{ env.RESULTS_DIR }}
+          if-no-files-found: warn
