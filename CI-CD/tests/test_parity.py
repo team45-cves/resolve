@@ -33,6 +33,9 @@ CI_CD_DIR = Path(__file__).resolve().parent.parent
 ACTIONS_DIR = CI_CD_DIR / "actions"
 SCRIPTS_DIR = CI_CD_DIR / "scripts"
 
+IGNORED_ACTIONS = {
+    "input-synthesis",  # no scripts/input-synthesis.py
+}
 
 COMMON_ACTION_ONLY_INPUTS = {"image"}
 
@@ -93,6 +96,7 @@ def _find_actions():
         path.parent.name
         for pattern in ("*/action.yml", "*/action.yaml")
         for path in ACTIONS_DIR.glob(pattern)
+        if path.parent.name not in IGNORED_ACTIONS
     )
 
 
