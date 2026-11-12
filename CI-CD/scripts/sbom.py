@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import pwd  # TODO: remove after verifying this runs as the non-root user
 
 # Shared CI helpers; they sit in the same folder as this script (scripts/ in the
 # repo, /app/actions in the image), so Python finds them without a path change.
@@ -35,6 +36,7 @@ import logger
 # Placeholder values until the rest of the pipeline's scripts and action.yml
 # files exist. Read with env.get_input: on GitHub from INPUT_<NAME> (which is
 # how action.yml passes its inputs in), locally from <NAME>.
+
 
 # SPDX SBOM to scan.
 SBOM_PATH = env.get_input("SBOM_PATH", "examples/sbom/example.spdx.json")
@@ -199,6 +201,10 @@ def main() -> int:
     output_dir = Path(OUTPUT_DIR)
     vulnerabilities_path = output_dir / "vulnerabilities.json"
 
+
+    current_uid = os.geteuid()
+    logger.debug(f"Running as: {pwd.getpwuid(current_uid).pw_name} (uid {current_uid})")
+    
     try:
         if not sbom_path.is_file():
             raise RuntimeError(f"SBOM not found: {sbom_path}")
