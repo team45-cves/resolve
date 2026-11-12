@@ -8,8 +8,10 @@ Runs the existing `resolve sbom` tool on an SPDX SBOM, checks its output, and
 writes one vulnerabilities.json per CVE so the input-synthesis stage can take
 them one at a time.
 
-Standard library only, so it runs under the RESOLVE image's bundled
-/opt/resolve/bin/python3 (see CI-CD/actions/sbom/action.yml) or any local Python 3.10+.
+In the pipeline, the runtime image (CI-CD/docker/pipeline/Dockerfile) runs this
+through its entrypoint, start_action.sh, when given the action name `sbom`
+(see CI-CD/actions/sbom/action.yml). Standard library only, so it also runs
+locally under any Python 3.10+.
 
 Outputs (in OUTPUT_DIR):
   vulnerabilities.json     all findings from `resolve sbom`
@@ -24,10 +26,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Shared CI helpers (logger.py, env.py) live in container-scripts next to this file.
-sys.path.insert(0, str(Path(__file__).resolve().parent / "container-scripts"))
-import ci_env as env  # noqa: E402
-import logger  # noqa: E402
+# Shared CI helpers; they sit in the same folder as this script (scripts/ in the
+# repo, /app/actions in the image), so Python finds them without a path change.
+import ci_env as env
+import logger
 
 # --- TEMPORARY CONFIG -------------------------------------------------------
 # Placeholder values until the rest of the pipeline's scripts and action.yml

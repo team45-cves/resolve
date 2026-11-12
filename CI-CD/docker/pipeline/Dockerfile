@@ -6,10 +6,10 @@
 #
 # Build from the CI-CD/ folder, which is the build context (COPY needs
 # scripts/ from there). Pick the AI backend with one arg (default: codex):
-#   docker build -f docker/Dockerfile -t resolve .                                 # codex (default)
-#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=claude   -t resolve . # Claude Code
-#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=opencode -t resolve . # opencode
-#   docker build -f docker/Dockerfile --build-arg AI_BACKEND=none     -t resolve . # no AI (hermetic)
+#   docker build -f docker/pipeline/Dockerfile -t resolve .                                 # codex (default)
+#   docker build -f docker/pipeline/Dockerfile --build-arg AI_BACKEND=claude   -t resolve . # Claude Code
+#   docker build -f docker/pipeline/Dockerfile --build-arg AI_BACKEND=opencode -t resolve . # opencode
+#   docker build -f docker/pipeline/Dockerfile --build-arg AI_BACKEND=none     -t resolve . # no AI (hermetic)
 #
 # The ENTRYPOINT is start_action.sh, which takes an action name (ART-001):
 #   docker run --rm -v "${PWD}:/work" resolve sbom ...
