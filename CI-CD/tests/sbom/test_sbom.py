@@ -1,9 +1,12 @@
 """Unit tests for sbom.py (the SBOM lookup pipeline stage).
 
 sbom.py runs `resolve sbom`, checks its output, and splits it into one file
-per CVE. These tests never run the real `resolve` tool: subprocess.run is
-replaced with a fake that writes a known vulnerabilities.json, so the tests
-are fast and check only sbom.py's own logic:
+per CVE. The tests come in two groups.
+
+Unit tests (sections 1-5) never run the real `resolve` tool: subprocess.run
+is replaced with a fake that replays real resolve output recorded from the
+sbom-textkit sample project (sbom/recorded/), so they use real data but are
+fast, need no network, and check only sbom.py's own logic:
 
     1. provider_env()          API key handling for LLM providers
     2. run_sbom_lookup()       the `resolve sbom` command line it builds
@@ -11,36 +14,49 @@ are fast and check only sbom.py's own logic:
     4. write_per_cve_files()   one document per CVE, CWEs grouped together
     5. main()                  the whole stage end to end, plus its exit codes
 
+Real-pipeline tests (section 6, marked real_resolve) run main() with the
+real `resolve sbom` on the SBOM sample projects in tests/sample-projects/.
+resolve looks each package up in NIST's NVD, so they need the network and
+take about 20 seconds in all. pytest.ini deselects them by default, and they
+skip themselves if `resolve` can't run (for example on macOS, outside the
+test image). Run them in the test image with:
+
+    docker run --rm --platform linux/amd64 resolve-test -m real_resolve sbom -v
+
 sbom.py reads its config (LLM_PROVIDER, MIN_SCORE, ...) once at import, so
 tests change those values with monkeypatch.setattr on the module.
 """
 
+import functools
+import copy
 import json
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import sbom
 
 
-def _vuln(cve_id, cwe_id, **extra):
-    """One entry as `resolve sbom` writes it, with every required key."""
-    entry = {
-        "cve-id": cve_id,
-        "cve-description": f"Description of {cve_id}",
-        "cwe-id": cwe_id,
-        "affected-function": "parse_header",
-        "affected-file": "src/parser.c",
-    }
-    entry.update(extra)
-    return entry
+# Real output of `resolve sbom` (v0.1.0, no LLM, --filter-rejected) on the
+# sbom-textkit sample project, recorded 2026-11-12 from the real NVD. It is
+# exactly what the tool wrote, underscore keys (cve_id) and all, so the
+# offline tests work on real data. 5 CVEs in 7 CVE/CWE entries; CVE-2023-6992
+# (zlib) has two CWEs, 126 and 787.
+RECORDED_OUTPUT = Path(__file__).parent / "recorded" / "textkit-vulnerabilities.json"
+RECORDED_RAW = json.loads(RECORDED_OUTPUT.read_text(encoding="utf-8"))["vulnerabilities"]
 
-
-# Two CVEs; the first has two CWE entries, so it must stay together in one file.
-SAMPLE_VULNERABILITIES = [
-    _vuln("CVE-2024-0001", "787", **{"package-name": "libfoo", "package-version": "1.0"}),
-    _vuln("CVE-2024-0001", "125", **{"package-name": "libfoo", "package-version": "1.0"}),
-    _vuln("CVE-2023-9999", "476", **{"package-name": "libbar", "package-version": "2.3"}),
+# The same entries with the hyphenated keys downstream stages read.
+REAL_VULNERABILITIES = [
+    {key.replace("_", "-"): value for key, value in entry.items()} for entry in RECORDED_RAW
+]
+REAL_CVE_FILES = [
+    "cves/CVE-2016-5384.json",
+    "cves/CVE-2023-6992.json",
+    "cves/CVE-2026-22184.json",
+    "cves/CVE-2026-27171.json",
+    "cves/CVE-2026-27820.json",
 ]
 
 
@@ -60,17 +76,15 @@ def default_config(monkeypatch):
 def fake_resolve(monkeypatch):
     """Replace subprocess.run with a fake `resolve sbom`.
 
-    The fake records each command it is given and writes SAMPLE_VULNERABILITIES
-    to the path after -o, as the real tool would. Returns the list of recorded
-    calls, each a (command, kwargs) pair.
+    The fake records each command it is given and copies the recorded real
+    output (RECORDED_OUTPUT) to the path after -o, as the real tool would.
+    Returns the list of recorded calls, each a (command, kwargs) pair.
     """
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        output_path = command[command.index("-o") + 1]
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump({"vulnerabilities": SAMPLE_VULNERABILITIES}, f)
+        shutil.copyfile(RECORDED_OUTPUT, command[command.index("-o") + 1])
         return subprocess.CompletedProcess(command, returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -135,7 +149,7 @@ def test_run_sbom_lookup_passes_every_option(default_config, fake_resolve, tmp_p
     """Each config value turns into its matching `resolve sbom` flag."""
     monkeypatch.setattr(sbom, "LLM_PROVIDER", "ollama")
     monkeypatch.setattr(sbom, "MIN_SCORE", "7.0")
-    monkeypatch.setattr(sbom, "CVE_IDS", ["CVE-2024-0001", "CVE-2023-9999"])
+    monkeypatch.setattr(sbom, "CVE_IDS", ["CVE-2016-5384", "CVE-2023-6992"])
     monkeypatch.setattr(sbom, "FILTER_REJECTED", False)
     monkeypatch.setattr(sbom, "FILTER_DISPUTED", True)
     monkeypatch.setattr(sbom, "FILTER_DEFERRED", True)
@@ -146,7 +160,7 @@ def test_run_sbom_lookup_passes_every_option(default_config, fake_resolve, tmp_p
     assert command[5:] == [
         "-L", "ollama",
         "--min-score", "7.0",
-        "--id", "CVE-2024-0001", "CVE-2023-9999",
+        "--id", "CVE-2016-5384", "CVE-2023-6992",
         "--filter-disputed",
         "--filter-deferred",
     ]
@@ -155,11 +169,12 @@ def test_run_sbom_lookup_passes_every_option(default_config, fake_resolve, tmp_p
 # ----------------------------------------------------- load_vulnerabilities ---
 
 
-def test_load_vulnerabilities_reads_list(tmp_path):
-    """A valid vulnerabilities.json is returned as its list of entries."""
+def test_load_vulnerabilities_reads_hyphenated_file_unchanged(tmp_path, capsys):
+    """A file that already has hyphenated keys is returned as-is, with no warning."""
     path = tmp_path / "vulnerabilities.json"
-    path.write_text(json.dumps({"vulnerabilities": SAMPLE_VULNERABILITIES}), encoding="utf-8")
-    assert sbom.load_vulnerabilities(path) == SAMPLE_VULNERABILITIES
+    path.write_text(json.dumps({"vulnerabilities": REAL_VULNERABILITIES}), encoding="utf-8")
+    assert sbom.load_vulnerabilities(path) == REAL_VULNERABILITIES
+    assert "::warning" not in capsys.readouterr().out
 
 
 def test_load_vulnerabilities_missing_file(tmp_path):
@@ -168,25 +183,23 @@ def test_load_vulnerabilities_missing_file(tmp_path):
         sbom.load_vulnerabilities(tmp_path / "vulnerabilities.json")
 
 
-def test_load_vulnerabilities_converts_underscore_keys(tmp_path, capsys):
-    """resolve sbom writes cve_id; it is converted to cve-id, with a warning, in memory and on disk.
+def test_load_vulnerabilities_converts_real_underscore_output(tmp_path, capsys):
+    """The real resolve output (cve_id) is converted to cve-id, with a warning, in memory and on disk.
 
     Downstream stages (reach, remediate, CVEAssert) read the hyphenated keys
     from the file, so the file itself must be rewritten too.
     """
-    expected = _vuln("CVE-2024-0001", "787")
-    entry = {key.replace("-", "_"): value for key, value in expected.items()}
     path = tmp_path / "vulnerabilities.json"
-    path.write_text(json.dumps({"vulnerabilities": [entry]}), encoding="utf-8")
+    shutil.copyfile(RECORDED_OUTPUT, path)
 
-    assert sbom.load_vulnerabilities(path) == [expected]
-    assert json.loads(path.read_text(encoding="utf-8")) == {"vulnerabilities": [expected]}
+    assert sbom.load_vulnerabilities(path) == REAL_VULNERABILITIES
+    assert json.loads(path.read_text(encoding="utf-8")) == {"vulnerabilities": REAL_VULNERABILITIES}
     assert "::warning" in capsys.readouterr().out
 
 
 def test_load_vulnerabilities_rejects_missing_keys(tmp_path):
-    """An entry missing a key downstream stages need fails, naming the entry and the key."""
-    entry = _vuln("CVE-2024-0001", "787")
+    """A real entry with a key downstream stages need removed fails, naming the entry and the key."""
+    entry = copy.deepcopy(REAL_VULNERABILITIES[0])
     del entry["affected-file"]
     path = tmp_path / "vulnerabilities.json"
     path.write_text(json.dumps({"vulnerabilities": [entry]}), encoding="utf-8")
@@ -198,50 +211,55 @@ def test_load_vulnerabilities_rejects_missing_keys(tmp_path):
 
 
 def test_write_per_cve_files_groups_by_cve(tmp_path):
-    """One file per CVE, sorted by ID, each holding every CWE entry for that CVE."""
-    paths = sbom.write_per_cve_files(SAMPLE_VULNERABILITIES, tmp_path / "cves")
+    """One file per CVE, sorted by ID, each holding every CWE entry for that CVE.
 
-    assert [p.name for p in paths] == ["CVE-2023-9999.json", "CVE-2024-0001.json"]
+    In the real textkit output CVE-2023-6992 (zlib) has two CWE entries, so
+    both must land in the same file.
+    """
+    paths = sbom.write_per_cve_files(REAL_VULNERABILITIES, tmp_path / "cves")
 
-    first = json.loads(paths[1].read_text(encoding="utf-8"))
-    assert [v["cwe-id"] for v in first["vulnerabilities"]] == ["787", "125"]
+    assert [f"cves/{p.name}" for p in paths] == REAL_CVE_FILES
 
-    second = json.loads(paths[0].read_text(encoding="utf-8"))
-    assert second["vulnerabilities"] == [SAMPLE_VULNERABILITIES[2]]
+    zlib = json.loads((tmp_path / "cves" / "CVE-2023-6992.json").read_text(encoding="utf-8"))
+    assert [v["cwe-id"] for v in zlib["vulnerabilities"]] == ["126", "787"]
+    assert {v["package-name"] for v in zlib["vulnerabilities"]} == {"ZLIB:ZLIB::ZLIB"}
+
+    fontconfig = json.loads((tmp_path / "cves" / "CVE-2016-5384.json").read_text(encoding="utf-8"))
+    assert fontconfig["vulnerabilities"] == [
+        v for v in REAL_VULNERABILITIES if v["cve-id"] == "CVE-2016-5384"
+    ]
 
 
 # -------------------------------------------------------------------- main ---
 
 
-def test_main_end_to_end(github_env, default_config, fake_resolve, monkeypatch):
-    """A full run writes the per-CVE files, the step outputs and the step summary."""
-    sbom_file = github_env.workspace / "example.spdx.json"
-    sbom_file.write_text("{}", encoding="utf-8")
-    output_dir = github_env.workspace / "sbom-out"
-    summary_file = github_env.workspace / "summary.md"
-    monkeypatch.setattr(sbom, "SBOM_PATH", str(sbom_file))
+def test_main_end_to_end_with_recorded_output(github_env, sample_project, default_config, fake_resolve, monkeypatch):
+    """A full run on the real textkit SBOM, replaying resolve's recorded output.
+
+    Checks everything the stage produces: the per-CVE files, the step outputs
+    and the step summary. The real-NVD version is test_real_textkit below.
+    """
+    workspace = sample_project("sbom-textkit")
+    output_dir = workspace / "sbom-out"
+    summary_file = workspace / "summary.md"
+    monkeypatch.setattr(sbom, "SBOM_PATH", str(workspace / "sbom.spdx.json"))
     monkeypatch.setattr(sbom, "OUTPUT_DIR", str(output_dir))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_file))
 
     assert sbom.main() == 0
 
-    assert (output_dir / "vulnerabilities.json").is_file()
-    assert sorted(p.name for p in (output_dir / "cves").iterdir()) == [
-        "CVE-2023-9999.json",
-        "CVE-2024-0001.json",
-    ]
+    command, _ = fake_resolve[0]
+    assert command[2] == str(workspace / "sbom.spdx.json")
+    assert sorted(f"cves/{p.name}" for p in (output_dir / "cves").iterdir()) == REAL_CVE_FILES
 
     outputs = _read_github_outputs(github_env.output_file)
     assert outputs["vulnerabilities-path"] == str(output_dir / "vulnerabilities.json")
-    assert outputs["cve-count"] == "2"
-    assert json.loads(outputs["cve-files"]) == [
-        "cves/CVE-2023-9999.json",
-        "cves/CVE-2024-0001.json",
-    ]
+    assert outputs["cve-count"] == "5"
+    assert json.loads(outputs["cve-files"]) == REAL_CVE_FILES
 
     summary = summary_file.read_text(encoding="utf-8")
-    assert "Found **2** CVEs (3 CVE/CWE entries)" in summary
-    assert "| CVE-2024-0001 | CWE-787" in summary
+    assert "Found **5** CVEs (7 CVE/CWE entries)" in summary
+    assert "| CVE-2016-5384 | CWE-415 Double Free | `fontconfig:fontconfig_project::fontconfig` | 2.2.1 |" in summary
 
 
 def test_main_fails_when_sbom_missing(github_env, default_config, fake_resolve, monkeypatch):
@@ -253,15 +271,156 @@ def test_main_fails_when_sbom_missing(github_env, default_config, fake_resolve, 
     assert fake_resolve == []
 
 
-def test_main_returns_resolve_exit_code(github_env, default_config, monkeypatch):
-    """If `resolve sbom` fails, the stage exits with the same code."""
-    sbom_file = github_env.workspace / "example.spdx.json"
-    sbom_file.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(sbom, "SBOM_PATH", str(sbom_file))
-    monkeypatch.setattr(sbom, "OUTPUT_DIR", str(github_env.workspace / "sbom-out"))
+def test_main_returns_resolve_exit_code(github_env, sample_project, default_config, monkeypatch):
+    """If `resolve sbom` crashes, the stage exits with the same code."""
+    workspace = sample_project("sbom-textkit")
+    monkeypatch.setattr(sbom, "SBOM_PATH", str(workspace / "sbom.spdx.json"))
+    monkeypatch.setattr(sbom, "OUTPUT_DIR", str(workspace / "sbom-out"))
 
     def failing_run(command, **kwargs):
         raise subprocess.CalledProcessError(3, command)
 
     monkeypatch.setattr(subprocess, "run", failing_run)
     assert sbom.main() == 3
+
+
+# ------------------------------------------------- 6. real resolve pipeline ---
+#
+# These run main() with the real `resolve sbom`, which queries NIST's NVD.
+# NVD keeps adding CVEs, so they check that specific known CVEs are present,
+# never exact counts (see tests/sample-projects/SBOM-SAMPLE-PROJECTS.md).
+
+
+@functools.cache
+def _resolve_problem():
+    """Why the real `resolve` can't run here, or None if it can. Checked once per session."""
+    try:
+        result = subprocess.run(["resolve", "version"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"`resolve version` could not run: {exc}"
+    if result.returncode != 0:
+        return f"`resolve version` exited {result.returncode}: {result.stderr.strip()[:200]}"
+    return None
+
+
+@pytest.fixture
+def real_resolve():
+    """Skip the test unless the real `resolve` tool works (it does in the test image)."""
+    if problem := _resolve_problem():
+        pytest.skip(f"real resolve unavailable ({problem}); run these in the test image")
+
+
+@pytest.fixture
+def run_real_pipeline(github_env, sample_project, default_config, monkeypatch):
+    """Return a function that runs the SBOM stage on a sample project, for real.
+
+    It copies tests/sample-projects/<project> into the workspace, points
+    SBOM_PATH at <sbom_file> in it, runs sbom.main() and returns
+    (exit code, output folder, step outputs as a dict).
+    """
+    def run(project, sbom_file):
+        workspace = sample_project(project)
+        output_dir = workspace / "sbom-out"
+        monkeypatch.setattr(sbom, "SBOM_PATH", str(workspace / sbom_file))
+        monkeypatch.setattr(sbom, "OUTPUT_DIR", str(output_dir))
+        exit_code = sbom.main()
+        return exit_code, output_dir, _read_github_outputs(github_env.output_file)
+
+    return run
+
+
+@pytest.mark.real_resolve
+def test_real_finds_known_cve(real_resolve, run_real_pipeline):
+    """sbom-c-vuln (cJSON 1.7.17): the stage finds CVE-2024-31755 and writes a valid file for it.
+
+    Also checks the files downstream stages read: the real resolve writes
+    underscore keys (cve_id), so vulnerabilities.json must have been rewritten
+    with hyphenated keys, and every entry must have every required key.
+    """
+    exit_code, output_dir, outputs = run_real_pipeline("sbom-c-vuln", "sbom.spdx.json")
+
+    assert exit_code == 0
+
+    cve_files = json.loads(outputs["cve-files"])
+    assert "cves/CVE-2024-31755.json" in cve_files
+    assert int(outputs["cve-count"]) == len(cve_files) >= 1
+    assert sorted(f"cves/{p.name}" for p in (output_dir / "cves").iterdir()) == sorted(cve_files)
+
+    target = json.loads((output_dir / "cves" / "CVE-2024-31755.json").read_text(encoding="utf-8"))
+    assert {v["cve-id"] for v in target["vulnerabilities"]} == {"CVE-2024-31755"}
+    assert "cjson" in target["vulnerabilities"][0]["package-name"]
+    assert target["vulnerabilities"][0]["package-version"] == "1.7.17"
+
+    on_disk = json.loads((output_dir / "vulnerabilities.json").read_text(encoding="utf-8"))
+    for entry in on_disk["vulnerabilities"]:
+        assert sbom.REQUIRED_KEYS <= set(entry)
+        assert not any("_" in key for key in entry), f"underscore key left in {sorted(entry)}"
+
+
+@pytest.mark.real_resolve
+def test_real_cmake_generated_sbom(real_resolve, run_real_pipeline):
+    """sbom-dolphin, a real CMake-generated SBOM from a KDE project: finds CVE-2016-5384 in fontconfig 2.2.1."""
+    exit_code, output_dir, outputs = run_real_pipeline("sbom-dolphin", "sbom.spdx.json")
+
+    assert exit_code == 0
+    assert "cves/CVE-2016-5384.json" in json.loads(outputs["cve-files"])
+
+    fontconfig = json.loads((output_dir / "cves" / "CVE-2016-5384.json").read_text(encoding="utf-8"))
+    entry = fontconfig["vulnerabilities"][0]
+    assert entry["package-name"] == "fontconfig:fontconfig_project::fontconfig"
+    assert entry["package-version"] == "2.2.1"
+    assert entry["cwe-id"] == "415"
+
+
+@pytest.mark.real_resolve
+def test_real_textkit(real_resolve, run_real_pipeline):
+    """sbom-textkit, RESOLVE's own example: finds CVEs in both packages and groups a CVE's CWEs in one file.
+
+    CVE-2023-6992 (zlib) has two CWEs, 126 and 787, which must share one per-CVE file.
+    """
+    exit_code, output_dir, outputs = run_real_pipeline("sbom-textkit", "sbom.spdx.json")
+
+    assert exit_code == 0
+    cve_files = json.loads(outputs["cve-files"])
+    assert {"cves/CVE-2016-5384.json", "cves/CVE-2023-6992.json"} <= set(cve_files)
+
+    zlib = json.loads((output_dir / "cves" / "CVE-2023-6992.json").read_text(encoding="utf-8"))
+    assert {v["cwe-id"] for v in zlib["vulnerabilities"]} >= {"126", "787"}
+    assert {v["package-name"] for v in zlib["vulnerabilities"]} == {"ZLIB:ZLIB::ZLIB"}
+
+
+@pytest.mark.real_resolve
+@pytest.mark.parametrize("project", ["sbom-c-clean", "sbom-mixed"])
+def test_real_clean_project_reports_zero(real_resolve, run_real_pipeline, project):
+    """A project with no vulnerable packages passes with cve-count 0 and no per-CVE files.
+
+    sbom-c-clean has no packages; sbom-mixed has pybind11 2.13.6, which has no known CVEs.
+    """
+    exit_code, output_dir, outputs = run_real_pipeline(project, "sbom.spdx.json")
+
+    assert exit_code == 0
+    assert outputs["cve-count"] == "0"
+    assert json.loads(outputs["cve-files"]) == []
+    assert list((output_dir / "cves").iterdir()) == []
+
+
+@pytest.mark.real_resolve
+def test_real_project_without_sbom_fails(run_real_pipeline):
+    """sbom-python has no SBOM, so the stage fails before running resolve and writes no outputs."""
+    exit_code, output_dir, outputs = run_real_pipeline("sbom-python", "sbom.spdx.json")
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+    assert outputs == {}
+
+
+@pytest.mark.real_resolve
+@pytest.mark.xfail(
+    strict=True,
+    reason="Known bug: resolve sbom prints 'Could not ingest file' for a non-SPDX SBOM but exits 0, "
+    "so sbom.py reports 0 CVEs. To be fixed with the resolve team; remove this marker once it fails.",
+)
+def test_real_unreadable_sbom_fails(real_resolve, run_real_pipeline):
+    """sbom-bad-format (CycloneDX): an SBOM resolve can't read must fail, not report 'no vulnerabilities'."""
+    exit_code, _, _ = run_real_pipeline("sbom-bad-format", "sbom.cdx.json")
+    assert exit_code != 0
