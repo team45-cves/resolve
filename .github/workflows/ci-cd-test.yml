@@ -16,19 +16,30 @@ name: CI-CD test
 #     paths: ["CI-CD/**", ".github/workflows/ci-cd-test.yml"]
 #   pull_request:
 #     paths: ["CI-CD/**", ".github/workflows/ci-cd-test.yml"]
+#
+# llm-provider (chosen in the "Run workflow" form):
+#   none    no AI; affected-file/affected-function come back UNKNOWN
+#   gemini  `resolve sbom -L gemini`; needs the GEMINI_API_KEY repo secret
 on:
   workflow_dispatch:
+    inputs:
+      llm-provider:
+        description: "LLM that fills in affected file/function"
+        type: choice
+        options: [none, gemini]
+        default: none
 
 permissions:
   contents: read
 
 jobs:
   sbom:
-    name: sbom action (sample SBOM)
+    name: sbom action (sample SBOM, llm ${{ inputs.llm-provider }})
     runs-on: ubuntu-latest
     env:
       IMAGE: resolve-ci:dev
       OUTPUT_DIR: test-results/sbom-c-vuln
+      LLM_PROVIDER: ${{ inputs.llm-provider }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -48,6 +59,9 @@ jobs:
           image: ${{ env.IMAGE }}
           sbom-path: CI-CD/tests/sample-projects/sbom-c-vuln/sbom.spdx.json
           output-dir: ${{ env.OUTPUT_DIR }}
+          llm-provider: ${{ env.LLM_PROVIDER }}
+          # Only hand the key over when an LLM that needs it was chosen.
+          api-key: ${{ inputs.llm-provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
 
       - name: Check results
         env:
@@ -69,10 +83,27 @@ jobs:
           grep -q "CVE-2024-31755" "$OUTPUT_DIR/vulnerabilities.json" \
             || echo "::warning::CVE-2024-31755 not in results (NVD data may have changed)"
 
+          # With an LLM, v0.1.0 doesn't fail on a bad key or a failed call: it
+          # just writes UNKNOWN. Warn (not fail; LLM answers vary) if the LLM
+          # filled in nothing at all.
+          if [ "$LLM_PROVIDER" != "none" ]; then
+            python3 - "$OUTPUT_DIR/vulnerabilities.json" <<'EOF'
+          import json, sys
+          vulns = json.load(open(sys.argv[1]))["vulnerabilities"]
+          found = [v for v in vulns if v.get("affected-function", "UNKNOWN") != "UNKNOWN"]
+          print(f"LLM filled in affected-function for {len(found)} of {len(vulns)} entries")
+          for v in found:
+              print(f"  {v['cve-id']}: {v.get('affected-file')}:{v['affected-function']}")
+          if not found:
+              print("::warning::LLM returned no affected functions (check the key, quota "
+                    "and the 'resolve sbom' log for 'Failed to identify')")
+          EOF
+          fi
+
       - name: Upload results
         if: always()   # upload even if an earlier step failed
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-c-vuln-results
+          name: sbom-c-vuln-results-${{ inputs.llm-provider }}
           path: ${{ env.OUTPUT_DIR }}
           if-no-files-found: warn
