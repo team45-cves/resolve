@@ -26,7 +26,7 @@ import logger
 
 # Golden file the full-run test compares against.
 EXPECTED = Path(__file__).parent / "expected"
-EXPECTED_ANNOTATIONS = EXPECTED / "Annotations.txt"
+EXPECTED_ANNOTATIONS = EXPECTED / "annotations.txt"
 
 # The three annotation functions and the command each one prints.
 ANNOTATIONS = [

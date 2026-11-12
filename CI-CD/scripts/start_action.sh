@@ -100,7 +100,7 @@ case "$action" in
     remediate)    script="remediate.py" ;;
 
     # Reproducible short-term only: queries live NVD/MITRE data (F-2).
-    sbom)         script="sbom.py" ;;
+    sbom)         script="sbom.py"; needs_non_root=true ;;
 
     # LLM-agent stages. RESOLVE runs `claude --dangerously-skip-permissions`,
     # which Claude Code refuses as root, so these must not run as root (F-9).
