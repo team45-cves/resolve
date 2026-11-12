@@ -203,8 +203,8 @@ def main() -> int:
 
 
     current_uid = os.geteuid()
-    logger.debug(f"Running as: {pwd.getpwuid(current_uid).pw_name} (uid {current_uid})")
-    
+    logger.notice(f"Action ran as the following user: {pwd.getpwuid(current_uid).pw_name} (uid {current_uid})")
+
     try:
         if not sbom_path.is_file():
             raise RuntimeError(f"SBOM not found: {sbom_path}")
