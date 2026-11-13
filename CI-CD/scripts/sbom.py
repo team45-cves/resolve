@@ -75,6 +75,10 @@ PROVIDER_KEY_VARS = {
     "claude": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
 }
+# `claude setup-token` makes subscription tokens (sk-ant-oat...) that the claude
+# CLI reads from CLAUDE_CODE_OAUTH_TOKEN; sent as ANTHROPIC_API_KEY they fail auth.
+CLAUDE_OAUTH_PREFIX = "sk-ant-oat"
+CLAUDE_OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 
 
 def provider_env() -> dict[str, str]:
@@ -87,6 +91,12 @@ def provider_env() -> dict[str, str]:
         return run_env
 
     key = API_KEY or run_env.get(key_var, "")
+    if LLM_PROVIDER == "claude":
+        key = key or run_env.get(CLAUDE_OAUTH_VAR, "")
+        if key.startswith(CLAUDE_OAUTH_PREFIX):
+            # The CLI prefers an API key over a token, so drop any it inherited.
+            run_env.pop(key_var, None)
+            key_var = CLAUDE_OAUTH_VAR
     # Without a key the lookup still succeeds but every affected file/function
     # comes back UNKNOWN, which is easy to miss in CI, so fail loudly instead.
     if not key:

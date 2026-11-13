@@ -20,6 +20,10 @@ Inputs (via ci_env.get_input -> INPUT_<NAME> on GitHub):
   MODEL       optional --model override
   TARGET_DIR  subdir of the repo to prepare       (default ".")
 
+After the agent exits 0, checks that it left the agent file and a non-empty
+build/ in the working directory (the target dir) for later stages; fails the
+step if not.
+
 Sets the step output `agents-file` (the memory file the stage writes) and, if
 GITHUB_STEP_SUMMARY is set, appends a one-line summary.
 """
@@ -49,6 +53,10 @@ AGENT_SPEC = {
 }
 # Agents that require a key (opencode may run without one).
 KEY_REQUIRED = {"claude", "codex"}
+# `claude setup-token` makes subscription tokens (sk-ant-oat...) that the claude
+# CLI reads from CLAUDE_CODE_OAUTH_TOKEN; sent as ANTHROPIC_API_KEY they fail auth.
+CLAUDE_OAUTH_PREFIX = "sk-ant-oat"
+CLAUDE_OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 
 
 def agent_env() -> dict[str, str]:
@@ -56,6 +64,12 @@ def agent_env() -> dict[str, str]:
     run_env = dict(os.environ)
     key_var, _ = AGENT_SPEC[AGENT]
     key = API_KEY or run_env.get(key_var, "")
+    if AGENT == "claude":
+        key = key or run_env.get(CLAUDE_OAUTH_VAR, "")
+        if key.startswith(CLAUDE_OAUTH_PREFIX):
+            # The CLI prefers an API key over a token, so drop any it inherited.
+            run_env.pop(key_var, None)
+            key_var = CLAUDE_OAUTH_VAR
     # Without a key the agent CLI fails deep inside the run; check up front.
     if AGENT in KEY_REQUIRED and not key:
         raise RuntimeError(
@@ -84,6 +98,24 @@ def run_setup(cve_path: Path) -> None:
         subprocess.run(command, check=True, env=run_env)
 
 
+def check_build() -> None:
+    """Fail if setup exited 0 but left nothing for the next stages.
+
+    Paths are relative to the working directory, which the action sets to the
+    target dir (-w /work/<target-dir>).
+    """
+    _, agents_file = AGENT_SPEC[AGENT]
+    memory = Path(agents_file)
+    if not memory.is_file() or memory.stat().st_size == 0:
+        raise RuntimeError(f"setup finished but did not write {agents_file}")
+
+    build = Path("build")
+    if not build.is_dir():
+        raise RuntimeError("setup finished but build/ was not created")
+    if not any(p.is_file() for p in build.rglob("*")):
+        raise RuntimeError("build/ is empty; the build likely failed")
+
+
 def write_outputs(cve_path: Path) -> None:
     _, agents_file = AGENT_SPEC[AGENT]
     rel = agents_file if TARGET_DIR in ("", ".") else f"{TARGET_DIR.rstrip('/')}/{agents_file}"
@@ -110,6 +142,7 @@ def main() -> int:
         if not cve_path.is_file():
             raise RuntimeError(f"CVE not found: {cve_path}")
         run_setup(cve_path)
+        check_build()
         write_outputs(cve_path)
     except subprocess.CalledProcessError as exc:
         logger.error(f"setup agent failed with exit code {exc.returncode}", title="setup")

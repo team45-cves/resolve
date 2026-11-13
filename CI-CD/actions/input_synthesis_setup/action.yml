@@ -4,7 +4,8 @@ description: >
   prepare the checked-out repo for CVE analysis: check out the affected
   version, map architecture/deps/build steps into the agent file
   (CLAUDE.md / AGENTS.md), install dependencies with source available, and
-  build into build/. Runs inside the RESOLVE runtime image (setup/Dockerfile).
+  build into build/. Runs inside the RESOLVE runtime image
+  (CI-CD/docker/pipeline/Dockerfile).
   Operates on a single CVE; loop in the caller to cover many.
 
 inputs:
@@ -31,7 +32,7 @@ inputs:
     default: "."
   image:
     description: >
-      Prebuilt RESOLVE image to reuse. If empty, builds setup/Dockerfile with
+      Prebuilt RESOLVE image to reuse. If empty, builds CI-CD/docker/pipeline/Dockerfile with
       AI_BACKEND=<agent>. Pass a tag you built once earlier in the job to avoid
       rebuilding.
     default: ""
@@ -60,13 +61,13 @@ runs:
           repo_root=$(realpath "$GITHUB_ACTION_PATH/../../..")
           IMAGE="resolve-input-synthesis:$AGENT"
           docker build --build-arg AI_BACKEND="$AGENT" -t "$IMAGE" \
-            -f "$repo_root/setup/Dockerfile" "$repo_root/setup"
+            -f "$repo_root/CI-CD/docker/pipeline/Dockerfile" "$repo_root/CI-CD"
         fi
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
     # --- run the setup stage ------------------------------------------------
     # The action stays thin: it wires inputs in as INPUT_* env vars and mounts,
-    # then runs CI-CD/scripts/setup.py, which does the agent->key mapping, runs
+    # then runs CI-CD/scripts/input_synthesis_setup.py, which does the agent->key mapping, runs
     # the stage, and sets outputs. Mirrors the sbom action.
     - name: Setup target
       id: setup
@@ -92,6 +93,12 @@ runs:
         # ci_env detect the platform. PYTHONPATH runs resolve-cli from this repo
         # instead of the release pinned in the image. -w is the target the agent
         # checks out/builds into.
+        #
+        # The image's ENTRYPOINT (start_action.sh) dispatches
+        # "input-synthesis-setup" to input_synthesis_setup.py and, since GitHub
+        # starts containers as root, drops to the owner of the target dir first:
+        # `claude --dangerously-skip-permissions` refuses to run as root (F-9).
+        # RESOLVE_SCRIPTS_DIR points it at this repo's scripts, not the image's.
         docker run --rm \
           -v "$GITHUB_WORKSPACE:/work" \
           -w "/work/$INPUT_TARGET_DIR" \
@@ -101,6 +108,6 @@ runs:
           -e GITHUB_ACTIONS \
           -e PYTHONPATH=/resolve/resolve-cli/src \
           -e INPUT_CVE_PATH="$abs_cve" \
+          -e RESOLVE_SCRIPTS_DIR=/resolve/CI-CD/scripts \
           -e INPUT_AGENT -e INPUT_MODEL -e INPUT_API_KEY -e INPUT_TARGET_DIR \
-          "$IMAGE" \
-          /opt/resolve/bin/python3 /resolve/CI-CD/scripts/input_synthesis_setup.py
+          "$IMAGE" input-synthesis-setup
