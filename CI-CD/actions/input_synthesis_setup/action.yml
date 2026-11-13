@@ -103,4 +103,4 @@ runs:
           -e INPUT_CVE_PATH="$abs_cve" \
           -e INPUT_AGENT -e INPUT_MODEL -e INPUT_API_KEY -e INPUT_TARGET_DIR \
           "$IMAGE" \
-          /opt/resolve/bin/python3 /resolve/CI-CD/scripts/setup.py
+          /opt/resolve/bin/python3 /resolve/CI-CD/scripts/input_synthesis_setup.py
