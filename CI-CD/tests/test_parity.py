@@ -13,6 +13,9 @@ here instead of silently doing nothing in CI:
                               over as INPUT_<NAME>
     4. Outputs                every set_output("<name>", ...) in the script
                               is an output of the action, and vice versa
+    5. Dispatcher             scripts/start_action.sh has an entry for the
+                              script, and the action runs it through that
+                              entry ("$IMAGE" <action>), never the .py directly
 
 Input names map to globals by upper-casing and swapping "-" for "_":
 the input sbom-path becomes the global SBOM_PATH.
@@ -32,6 +35,7 @@ import yaml
 CI_CD_DIR = Path(__file__).resolve().parent.parent
 ACTIONS_DIR = CI_CD_DIR / "actions"
 SCRIPTS_DIR = CI_CD_DIR / "scripts"
+DISPATCHER = SCRIPTS_DIR / "start_action.sh"
 
 IGNORED_ACTIONS = {
     "input-synthesis",  # no scripts/input-synthesis.py
@@ -86,6 +90,11 @@ STEP_OUTPUT_RE = re.compile(r"\$\{\{\s*steps\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}
 # ${{ inputs.<name> }} in a step's env value. Grabs the input name.
 INPUT_REF_RE = re.compile(r"^\$\{\{\s*inputs\.([\w-]+)\s*\}\}$")
 
+# A case entry in start_action.sh, e.g. `sbom)  script="sbom.py"`, where the
+# script line may also be on the next line. Group 1 is the dispatcher's
+# action name, group 2 the script it runs.
+DISPATCH_ENTRY_RE = re.compile(r'^\s*([\w-]+)\)\s*script="([^"]+)"', re.MULTILINE)
+
 
 # ------------------------------------------------------------- helpers ---
 
@@ -101,6 +110,28 @@ def _find_actions():
 
 
 ACTIONS = _find_actions()
+
+
+def _read_dispatcher():
+    """start_action.sh's mapping as {script file: dispatcher action name}."""
+    if not DISPATCHER.is_file():
+        return {}
+    text = DISPATCHER.read_text(encoding="utf-8")
+    return {script: action for action, script in DISPATCH_ENTRY_RE.findall(text)}
+
+
+DISPATCH_NAMES = _read_dispatcher()
+
+
+#the run text without its comment lines, so a comment never counts as a call
+def _code(run):
+    return "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
+
+
+#whether the run text calls the dispatcher with this action name: "$IMAGE" sbom
+def _calls_dispatcher(run, dispatch_name):
+    pattern = rf'"?\$\{{?IMAGE\}}?"?(?:\s|\\)+{re.escape(dispatch_name)}(?![\w-])'
+    return re.search(pattern, _code(run)) is not None
 
 #Given a folder name, it returns the path to that folder's action.yml/.yaml
 def _action_file(name):
@@ -166,10 +197,20 @@ def action(request):
             if key is not None:
                 input_globals[target.id] = key
 
-    # The step whose run line calls the script.
+    # The dispatcher's name for this script (None if start_action.sh has no entry).
+    dispatch_name = DISPATCH_NAMES.get(f"{name}.py")
+    steps = (spec.get("runs") or {}).get("steps") or []
+
+    # The step that runs the script through the dispatcher: "$IMAGE" <dispatch_name>.
     script_steps = [
-        step for step in (spec.get("runs") or {}).get("steps") or []
-        if re.search(rf"\b{re.escape(name)}\.py\b", step.get("run") or "")
+        step for step in steps
+        if dispatch_name and _calls_dispatcher(step.get("run") or "", dispatch_name)
+    ]
+
+    # Steps that call the .py file themselves, skipping the dispatcher.
+    direct_steps = [
+        step for step in steps
+        if re.search(rf"\b{re.escape(name)}\.py\b", _code(step.get("run") or ""))
     ]
 
     return {
@@ -180,7 +221,9 @@ def action(request):
         "outputs": spec.get("outputs") or {},
         "source": source,
         "input_globals": input_globals,
+        "dispatch_name": dispatch_name,
         "script_steps": script_steps,
+        "direct_steps": direct_steps,
     }
 
 
@@ -272,7 +315,8 @@ def test_inputs_reach_the_script(action):
     steps = action["script_steps"]
     assert len(steps) == 1, (
         f"Expected exactly one step in {action['action_file']} to run "
-        f"{action['name']}.py, found {len(steps)}"
+        f'"$IMAGE" {action["dispatch_name"] or "<action>"}, found {len(steps)} '
+        "(see test_action_uses_the_dispatcher)"
     )
     step = steps[0]
     env = step.get("env") or {}
@@ -319,6 +363,11 @@ def test_outputs_match(action):
     and that name must be one the script sets. Every name the script sets
     must also be exposed as an action output.
     """
+    if len(action["script_steps"]) != 1:
+        pytest.fail(
+            f"Can't match outputs: no single step in {action['action_file']} runs the "
+            "script through the dispatcher (see test_action_uses_the_dispatcher)"
+        )
     script_outputs = {m.group(2) for m in SET_OUTPUT_RE.finditer(action["source"])}
     step_ids = {step.get("id") for step in action["script_steps"]}
 
@@ -344,3 +393,40 @@ def test_outputs_match(action):
         problems.append(f"set_output({name!r}, ...) is not exposed as an output in action.yml")
 
     assert not problems, f"{action['action_file']} vs {action['script_file']}:\n  " + "\n  ".join(problems)
+
+
+# 5. Dispatcher -------------------------------------------------------------
+
+
+def test_dispatcher_has_an_entry(action):
+    """start_action.sh maps an action name to this script.
+
+    Without an entry, the container rejects the action at run time with
+    "unknown action" (exit code 2).
+    """
+    assert action["dispatch_name"], (
+        f"{DISPATCHER.relative_to(CI_CD_DIR)} has no entry for {action['script_file']}; "
+        f'add a line like  my-action)  script="{action["name"]}.py" ;;'
+    )
+
+
+def test_action_uses_the_dispatcher(action):
+    """The action runs its script through start_action.sh, never directly.
+
+    Exactly one step must call the image with the dispatcher's name
+    ("$IMAGE" <action>), and no step may run the .py file itself, which
+    would skip the dispatcher's allow-list and its non-root handling.
+    """
+    problems = []
+    if action["direct_steps"]:
+        names = [step.get("id", step.get("name")) for step in action["direct_steps"]]
+        problems.append(f"step(s) {names} run {action['name']}.py directly")
+    if action["dispatch_name"] and len(action["script_steps"]) != 1:
+        problems.append(
+            f'expected exactly one step to run "$IMAGE" {action["dispatch_name"]}, '
+            f"found {len(action['script_steps'])}"
+        )
+    assert not problems, (
+        f"{action['action_file']} should run its script through "
+        f"{DISPATCHER.relative_to(CI_CD_DIR)}:\n  " + "\n  ".join(problems)
+    )
