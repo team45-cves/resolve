@@ -121,6 +121,24 @@ def test_provider_env_passes_api_key_to_provider_variable(default_config, monkey
     assert sbom.provider_env()["ANTHROPIC_API_KEY"] == "test-key"
 
 
+def test_provider_env_sends_claude_token_to_oauth_variable(default_config, monkeypatch):
+    """A `claude setup-token` token goes to CLAUDE_CODE_OAUTH_TOKEN, not ANTHROPIC_API_KEY."""
+    monkeypatch.setattr(sbom, "LLM_PROVIDER", "claude")
+    monkeypatch.setattr(sbom, "API_KEY", "sk-ant-oat01-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-runner")
+    run_env = sbom.provider_env()
+    assert run_env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-test"
+    assert "ANTHROPIC_API_KEY" not in run_env
+
+
+def test_provider_env_uses_claude_token_from_environment(default_config, monkeypatch):
+    """With no api-key input, a CLAUDE_CODE_OAUTH_TOKEN already set is enough."""
+    monkeypatch.setattr(sbom, "LLM_PROVIDER", "claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    assert sbom.provider_env()["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-test"
+
+
 def test_provider_env_fails_without_key(default_config, monkeypatch):
     """A provider that needs a key fails loudly rather than returning UNKNOWN for every file."""
     monkeypatch.setattr(sbom, "LLM_PROVIDER", "gemini")

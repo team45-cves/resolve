@@ -2,7 +2,7 @@ name: Input Synthesis
 description: >
   Run RESOLVE input-synthesis against the checked-out repo, using the per-CVE
   files the sbom action produced from that same repo. Runs inside the RESOLVE
-  runtime image (setup/Dockerfile); for each CVE it tries to synthesize and
+  runtime image (CI-CD/docker/pipeline/Dockerfile); for each CVE it tries to synthesize and
   verify a triggering input, writing one result directory per CVE.
 
 # Pairs with the sbom action in the SAME job: sbom writes <output-dir>/cves/*.json
@@ -56,7 +56,7 @@ inputs:
     default: "."
   image:
     description: >
-      Prebuilt RESOLVE image to reuse. If empty, builds setup/Dockerfile with
+      Prebuilt RESOLVE image to reuse. If empty, builds CI-CD/docker/pipeline/Dockerfile with
       AI_BACKEND=<agent>. Pass a tag you built once earlier in the job to avoid
       rebuilding.
     default: ""
@@ -88,7 +88,7 @@ runs:
           repo_root=$(realpath "$GITHUB_ACTION_PATH/../../..")
           IMAGE="resolve-input-synthesis:$AGENT"
           docker build --build-arg AI_BACKEND="$AGENT" -t "$IMAGE" \
-            -f "$repo_root/setup/Dockerfile" "$repo_root/setup"
+            -f "$repo_root/CI-CD/docker/pipeline/Dockerfile" "$repo_root/CI-CD"
         fi
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
@@ -123,6 +123,11 @@ runs:
           opencode) key_var=OPENCODE_API_KEY ;;
           *) echo "unknown agent: $AGENT" >&2; exit 1 ;;
         esac
+        # A `claude setup-token` subscription token (sk-ant-oat...) goes in
+        # CLAUDE_CODE_OAUTH_TOKEN; as ANTHROPIC_API_KEY it fails auth.
+        if [ "$AGENT" = claude ] && [[ "$API_KEY" == sk-ant-oat* ]]; then
+          key_var=CLAUDE_CODE_OAUTH_TOKEN
+        fi
         # Prefer an explicit api-key input; else inherit whatever is already set.
         if [ -n "$API_KEY" ]; then export "$key_var=$API_KEY"; fi
 
@@ -146,14 +151,22 @@ runs:
           # PYTHONPATH=/resolve/... runs this repo's working-tree code instead
           # of the release pinned in the image (same trick the sbom action uses).
           # -w sets the target working dir the synthesize stage operates on.
+          #
+          # `claude --dangerously-skip-permissions` refuses to run as root
+          # (F-9). start_action.sh drops root for actions it knows, but has no
+          # script for synthesize/run-all yet, so bypass it and run as the
+          # runner's user with a writable HOME for the agent's config.
+          # TODO: route through start_action.sh once those scripts exist.
           if docker run --rm \
+              --user "$(id -u):$(id -g)" -e HOME=/tmp \
+              --entrypoint /opt/resolve/bin/python3 \
               -v "$GITHUB_WORKSPACE:/work" \
               -w "/work/$TARGET_DIR" \
               -v "$repo_root:/resolve:ro" \
               -e PYTHONPATH=/resolve/resolve-cli/src \
               -e "$key_var" \
               "$IMAGE" \
-              /opt/resolve/bin/python3 -m "$module" \
+              -m "$module" \
                 "$AGENT" "/work/$cve_file" "/work/$OUTPUT_DIR/$cve_id" --overwrite $model_flag
           then
             echo "ok: $cve_id"
