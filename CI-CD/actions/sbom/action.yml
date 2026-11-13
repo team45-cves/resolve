@@ -33,6 +33,9 @@ inputs:
   api-key:
     description: "API key for llm-provider; required for claude and gemini, ignored otherwise"
     default: ""
+  ollama-host:
+    description: "ollama server URL for llm-provider ollama, reachable from inside the container (empty = localhost:11434)"
+    default: ""
   min-score:
     description: "Minimum CVSS v3 base score (empty = no minimum)"
     default: ""
@@ -78,6 +81,7 @@ runs:
         INPUT_FILTER_DISPUTED: ${{ inputs.filter-disputed }}
         INPUT_FILTER_DEFERRED: ${{ inputs.filter-deferred }}
         INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_OLLAMA_HOST: ${{ inputs.ollama-host }}
       run: |
         set -euo pipefail
         # Created on the host so later steps can write next to the results.
@@ -97,5 +101,5 @@ runs:
           -e GITHUB_ACTIONS \
           -e INPUT_SBOM_PATH -e INPUT_OUTPUT_DIR -e INPUT_LLM_PROVIDER -e INPUT_MIN_SCORE -e INPUT_CVE_IDS \
           -e INPUT_FILTER_REJECTED -e INPUT_FILTER_DISPUTED -e INPUT_FILTER_DEFERRED \
-          -e INPUT_API_KEY \
+          -e INPUT_API_KEY -e INPUT_OLLAMA_HOST \
           "$IMAGE" sbom

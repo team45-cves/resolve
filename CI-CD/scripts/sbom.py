@@ -47,6 +47,10 @@ LLM_PROVIDER = env.get_input("LLM_PROVIDER", "none")
 # Key for LLM_PROVIDER. Handed to resolve as the variable that provider reads
 # (see PROVIDER_KEY_VARS); if empty, that variable is used as-is.
 API_KEY = env.get_input("API_KEY", "")
+# ollama server for llm-provider ollama, e.g. http://172.17.0.1:11434. Handed to
+# resolve as OLLAMA_HOST (which the ollama library reads); empty means its
+# default, localhost:11434.
+OLLAMA_HOST = env.get_input("OLLAMA_HOST", "")
 # Minimum CVSS v3 base score; empty means no minimum.
 MIN_SCORE = env.get_input("MIN_SCORE", "")
 # Only report these CVE IDs (space-separated); empty means all.
@@ -76,6 +80,8 @@ PROVIDER_KEY_VARS = {
 def provider_env() -> dict[str, str]:
     """Environment for `resolve sbom`, with the provider's key set if it needs one."""
     run_env = dict(os.environ)
+    if OLLAMA_HOST:
+        run_env["OLLAMA_HOST"] = OLLAMA_HOST
     key_var = PROVIDER_KEY_VARS.get(LLM_PROVIDER)
     if key_var is None:
         return run_env

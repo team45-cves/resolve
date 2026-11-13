@@ -20,13 +20,18 @@ name: CI-CD test
 # llm-provider (chosen in the "Run workflow" form):
 #   none    no AI; affected-file/affected-function come back UNKNOWN
 #   gemini  `resolve sbom -L gemini`; needs the GEMINI_API_KEY repo secret
+#           (v0.1.0 hard-codes gemini-2.5-flash, which Google no longer offers
+#           to new users, so this returns UNKNOWN until an upstream fix)
+#   ollama  `resolve sbom -L ollama`; starts a local ollama server on the
+#           runner and pulls gemma3 (the model v0.1.0 hard-codes). No key,
+#           no outside AI service. Those steps only run when ollama is chosen.
 on:
   workflow_dispatch:
     inputs:
       llm-provider:
         description: "LLM that fills in affected file/function"
         type: choice
-        options: [none, gemini]
+        options: [none, gemini, ollama]
         default: none
 
 permissions:
@@ -52,6 +57,33 @@ jobs:
           -t "$IMAGE"
           CI-CD
 
+      # --- ollama only -------------------------------------------------------
+      # Runs ollama as a second container on this runner. The sbom container
+      # reaches it through Docker's bridge gateway (the runner itself, where
+      # port 11434 is published), so no extra Docker network is needed.
+      - name: Start ollama and pull gemma3
+        id: ollama
+        if: inputs.llm-provider == 'ollama'
+        run: |
+          set -euo pipefail
+          docker run -d --name ollama -p 11434:11434 ollama/ollama:latest
+
+          # Wait (up to 60s) for the server to answer.
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/version && break
+            sleep 2
+          done
+          curl -sf http://localhost:11434/api/version > /dev/null \
+            || { echo "::error::ollama server did not start"; docker logs ollama; exit 1; }
+
+          # gemma3 is the model RESOLVE v0.1.0 asks ollama for (a few GB).
+          docker exec ollama ollama pull gemma3
+
+          gateway=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+          echo "host=http://$gateway:11434" >> "$GITHUB_OUTPUT"
+          echo "ollama reachable from containers at http://$gateway:11434"
+      # -----------------------------------------------------------------------
+
       - name: Run sbom action
         id: sbom
         uses: ./CI-CD/actions/sbom
@@ -62,6 +94,8 @@ jobs:
           llm-provider: ${{ env.LLM_PROVIDER }}
           # Only hand the key over when an LLM that needs it was chosen.
           api-key: ${{ inputs.llm-provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          # Empty unless the ollama step ran.
+          ollama-host: ${{ steps.ollama.outputs.host }}
 
       - name: Check results
         env:
@@ -99,6 +133,10 @@ jobs:
                     "and the 'resolve sbom' log for 'Failed to identify')")
           EOF
           fi
+
+      - name: Show ollama server log
+        if: always() && inputs.llm-provider == 'ollama'
+        run: docker logs ollama || true
 
       - name: Upload results
         if: always()   # upload even if an earlier step failed
