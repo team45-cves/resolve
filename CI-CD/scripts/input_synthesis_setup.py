@@ -10,7 +10,7 @@ project's architecture/deps/build steps into the agent file (CLAUDE.md /
 AGENTS.md), install dependencies with source available, and build into build/.
 
 Standard library only, so it runs under the RESOLVE image's bundled
-/opt/resolve/bin/python3 (see CI-CD/actions/setup/action.yml) or any local
+/opt/resolve/bin/python3 (see CI-CD/actions/input_synthesis_setup/action.yml) or any local
 Python 3.10+. Operates on a single CVE; loop in the caller to cover many.
 
 Inputs (via ci_env.get_input -> INPUT_<NAME> on GitHub):
